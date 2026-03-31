@@ -7,18 +7,31 @@ from pathlib import Path
 import numpy as np
 
 from .config.manager import ConfigManager
+
+# Import controllers and other components
 from .controller.clbf_controller import CLBFController
 from .controller.pd_controller import PDController
+
+# data engine for recording simulation data
 from .data.engine import DataEngine
+
+# Pinocchio model for robot dynamics
 from .dynamics.pinocchio_model import PinocchioModel
+
+# interfaces
 from .interfaces.controller import ControlMode, ControllerInterface
 from .interfaces.simulator import SimulatorInterface
+
+# simulator implementation
 from .simulator.pybullet_sim import PyBulletSimulator
+
+# analysis and visualization
 from .visualization.analytics import generate_report
 
 
 def build_pinocchio_model(config: dict) -> PinocchioModel:
     import pybullet_data
+
     urdf_path = str(Path(pybullet_data.getDataPath()) / config["robot"]["urdf"])
     return PinocchioModel(urdf_path)
 
@@ -69,7 +82,9 @@ def run_simulation(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Robot Arm CLBF Simulation")
     parser.add_argument(
-        "--config", type=str, default="configs/default.yaml",
+        "--config",
+        type=str,
+        default="configs/default.yaml",
         help="Path to config YAML file",
     )
     args = parser.parse_args()

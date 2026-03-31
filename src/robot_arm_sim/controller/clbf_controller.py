@@ -37,14 +37,13 @@ class CLBFController(ControllerInterface):
     def setup(self, config: dict[str, Any]) -> None:
         ctrl_cfg = config["controller"]
         self._kp = np.array(ctrl_cfg["gains"]["kp"], dtype=float)
-        mode_str = ctrl_cfg.get("control_mode", "velocity")
         self._mode = (
-            ControlMode.TORQUE if mode_str == "torque" else ControlMode.VELOCITY
-        )
+            ControlMode.VELOCITY
+        )  # 이건 속도 제어만 한다. 토크 제어는 지원하지 않음.
 
         clbf_cfg = ctrl_cfg.get("clbf", {})
         self._k = clbf_cfg.get("k", 10.0)
-        self._s = clbf_cfg.get("s", 1.0)
+        self._s = clbf_cfg.get("s", 50.0)
         self._barrier_radius_margin = clbf_cfg.get("barrier_radius_margin", 0.05)
         self._alpha = clbf_cfg.get("alpha", 1.0)
 
@@ -60,9 +59,7 @@ class CLBFController(ControllerInterface):
         k = self._k
         s = self._s
         diff = x - obs_center
-        circ = -0.5 * (
-            diff @ diff - (obs_radius + self._barrier_radius_margin) ** 2
-        )
+        circ = -0.5 * (diff @ diff - (obs_radius + self._barrier_radius_margin) ** 2)
         return self._sigmoid(circ * k * s) * k
 
     def _barrier_grad_for_obstacle(
@@ -156,10 +153,7 @@ class CLBFController(ControllerInterface):
             threshold = 1.0
         ratio = np.clip(soft_max / threshold, 0.0, 1.0)
 
-        dq = (
-            self._velocity_scale * ee_control * (1.0 - ratio)
-            + safety_control * ratio
-        )
+        dq = self._velocity_scale * ee_control * (1.0 - ratio) + safety_control * ratio
 
         # Velocity limit clipping
         velo_limit = 2.0
@@ -187,14 +181,12 @@ class CLBFController(ControllerInterface):
         dV = self._lyapunov_grad(ee_pos, target)
         return -J_pinv @ dV
 
-    def _tracking_only(
-        self, state: RobotState, target: np.ndarray
-    ) -> ControlOutput:
+    def _tracking_only(self, state: RobotState, target: np.ndarray) -> ControlOutput:
         q = state.joint_positions
         dq = self._velocity_scale * self._ee_tracking_control(
             q, state.ee_position, target
         )
-        velo_limit = 2.0
+        velo_limit = 1.0
         max_vel = np.abs(dq).max()
         if max_vel > velo_limit:
             dq *= velo_limit / max_vel
