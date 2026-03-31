@@ -1,0 +1,21 @@
+[project]
+name = "robot-arm-sim"
+version = "0.1.0"
+description = "7-DOF robot arm safe control simulation with PyBullet and Pinocchio"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.3.5",
+    "pandas>=3.0.1",
+    "pin>=3.9.0",
+    "pybullet>=3.2.7",
+    "pyyaml>=6.0.3",
+    "seaborn>=0.13.2",
+]
+
+[project.scripts]
+robot-arm-sim = "robot_arm_sim.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

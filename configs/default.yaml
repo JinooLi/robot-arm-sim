@@ -1,0 +1,42 @@
+simulation:
+  mode: "GUI"            # GUI or DIRECT
+  gravity: [0, 0, -9.81]
+  timestep: 0.001        # seconds
+  duration: 10.0         # seconds
+  control_frequency: 100 # Hz (control loop runs every N sim steps)
+
+robot:
+  urdf: "franka_panda/panda.urdf"
+  num_joints: 7
+  initial_joint_positions: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+  joint_damping: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+controller:
+  type: "clbf"
+  control_mode: "velocity"  # torque or velocity
+  gains:
+    kp: [10, 10, 10, 10, 5, 5, 5]
+    kd: [2, 2, 2, 2, 1, 1, 1]
+  clbf:
+    barrier_gain: 10.0
+    lyapunov_gain: 1.0
+    barrier_radius_margin: 0.05  # safety margin around obstacles
+    alpha: 1.0                   # class-K function parameter
+    k: 10.0
+    s: 50.0
+
+target:
+  ee_position: [0.5, 0.3, 0.4]
+
+obstacles:
+  - position: [0.5, 0.0, 0.4]
+    radius: 0.1
+    color: [1, 0, 0, 0.5]
+  - position: [0.3, 0.3, 0.3]
+    radius: 0.08
+    color: [1, 0.5, 0, 0.5]
+
+data:
+  output_dir: "results"
+  format: "csv"  # csv or parquet
+  record_frequency: 100  # Hz
