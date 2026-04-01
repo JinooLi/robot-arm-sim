@@ -33,7 +33,9 @@ controller:
     # Torque limits [Nm] (Eq. 52)
     tau_max: [50, 50, 50, 50, 8, 8, 8]
     # Link spherical enclosure radii [m] (joints 0-6 + EE)
-    link_radii: [0.08, 0.08, 0.07, 0.07, 0.06, 0.06, 0.06, 0.05]
+    # Wrist joints (4-6) are close together — use smaller radii to avoid
+    # initial self-collision penetration (dist(j4,j6) ≈ 0.088m)
+    link_radii: [0.08, 0.08, 0.07, 0.07, 0.04, 0.04, 0.04, 0.03]
     # Nominal Lyapunov controller
     kv: 30.0               # velocity tracking gain (computed torque)
     velocity_scale: 2.0    # Lyapunov gradient descent step scale

@@ -50,14 +50,14 @@ class RobustCBFController(ControllerInterface):
         self._mode = ControlMode.TORQUE
 
         # ---- HOCBF (Sec. III-C) ----
-        self._gamma: float = 500.0        # log-sum-exp smoothing  (Eq. 16)
-        self._alpha_1: float = 20.0       # class-K coeff for ψ_1 (Eq. 39)
+        self._gamma: float = 500.0  # log-sum-exp smoothing  (Eq. 16)
+        self._alpha_1: float = 20.0  # class-K coeff for ψ_1 (Eq. 39)
         self._alpha_2_star: float = 30.0  # desired α_2            (Eq. 52)
-        self._p1: float = 1.0             # slack weight           (Eq. 52)
+        self._p1: float = 1.0  # slack weight           (Eq. 52)
 
         # ---- Velocity CBF (Sec. III-B) ----
-        self._beta_1: float = 50.0        # upper bound gain       (Eq. 21)
-        self._beta_2: float = 50.0        # lower bound gain       (Eq. 21)
+        self._beta_1: float = 50.0  # upper bound gain       (Eq. 21)
+        self._beta_2: float = 50.0  # lower bound gain       (Eq. 21)
 
         # ---- Limits ----
         self._qdot_max = np.full(_N, 1.2)
@@ -65,12 +65,10 @@ class RobustCBFController(ControllerInterface):
 
         # ---- Link spherical enclosures (Fig. 2) ----
         # 7 joints + end-effector = 8 spheres
-        self._link_radii = np.array(
-            [0.08, 0.08, 0.07, 0.07, 0.06, 0.06, 0.06, 0.05]
-        )
+        self._link_radii = np.array([0.08, 0.08, 0.07, 0.07, 0.06, 0.06, 0.06, 0.05])
 
         # ---- Nominal controller ----
-        self._kv: float = 20.0     # velocity tracking gain (computed torque)
+        self._kv: float = 20.0  # velocity tracking gain (computed torque)
         self._vel_scale: float = 1.0
 
         # ---- Self-collision (Eq. 15) ----
@@ -137,9 +135,7 @@ class RobustCBFController(ControllerInterface):
     # Link data helper (shared by C++ and Python paths)
     # ------------------------------------------------------------------
 
-    def _compute_link_data(
-        self, q: np.ndarray
-    ) -> tuple[np.ndarray, list[np.ndarray]]:
+    def _compute_link_data(self, q: np.ndarray) -> tuple[np.ndarray, list[np.ndarray]]:
         """Compute positions and Jacobians for all links + EE."""
         n_links = len(self._link_radii)
         positions = np.empty((n_links, 3))
@@ -178,7 +174,7 @@ class RobustCBFController(ControllerInterface):
             for o_pos, o_r in obstacles:
                 d = link_pos[pi] - o_pos
                 r_sum = self._link_radii[pi] + o_r
-                h_vals.append(float(d @ d) - r_sum ** 2)
+                h_vals.append(float(d @ d) - r_sum**2)
                 h_grads.append(2.0 * link_jac[pi].T @ d)
 
         # Self-collision  h_{j,k}  (Eq. 15)
@@ -186,7 +182,7 @@ class RobustCBFController(ControllerInterface):
             for i, j in self._self_pairs:
                 d = link_pos[i] - link_pos[j]
                 r_sum = self._link_radii[i] + self._link_radii[j]
-                h_vals.append(float(d @ d) - r_sum ** 2)
+                h_vals.append(float(d @ d) - r_sum**2)
                 h_grads.append(2.0 * (link_jac[i] - link_jac[j]).T @ d)
 
         if not h_vals:
@@ -300,10 +296,7 @@ class RobustCBFController(ControllerInterface):
         b_vec = np.array(rhs)
 
         def obj(x: np.ndarray) -> float:
-            return (
-                0.5 * np.sum((x[:n] - tau_nom) ** 2)
-                + 0.5 * p1 * (x[n] - a2s) ** 2
-            )
+            return 0.5 * np.sum((x[:n] - tau_nom) ** 2) + 0.5 * p1 * (x[n] - a2s) ** 2
 
         def jac(x: np.ndarray) -> np.ndarray:
             g = np.zeros(n + 1)
@@ -368,12 +361,8 @@ class RobustCBFController(ControllerInterface):
         # ---- C++ fast path ----
         if self._cpp is not None:
             link_pos, link_jac = self._compute_link_data(q)
-            link_pos_p, link_jac_p = self._compute_link_data(
-                q + _FD_EPS * qdot
-            )
-            link_pos_m, link_jac_m = self._compute_link_data(
-                q - _FD_EPS * qdot
-            )
+            link_pos_p, link_jac_p = self._compute_link_data(q + _FD_EPS * qdot)
+            link_pos_m, link_jac_m = self._compute_link_data(q - _FD_EPS * qdot)
 
             # Pack obstacles into matrices
             n_obs = len(obs)
@@ -381,19 +370,36 @@ class RobustCBFController(ControllerInterface):
             obs_radii = np.array([o[1] for o in obs])
 
             tau, alpha_2, h_val = self._cpp.compute_safety_torque(
-                tau_nom, qdot, M_inv, f2,
-                link_pos, link_jac,
-                link_pos_p, link_jac_p,
-                link_pos_m, link_jac_m,
-                obs_positions, obs_radii,
+                tau_nom,
+                qdot,
+                M_inv,
+                f2,
+                link_pos,
+                link_jac,
+                link_pos_p,
+                link_jac_p,
+                link_pos_m,
+                link_jac_m,
+                obs_positions,
+                obs_radii,
             )
         else:
             # ---- Python fallback ----
             h_val, grad_h = self._h_and_grad(q, obs)
             hqq = self._hess_qdot_qdot(q, qdot, obs)
             tau, alpha_2 = self._solve_safety_qp(
-                tau_nom, qdot, h_val, grad_h, hqq, M_inv, f2,
+                tau_nom,
+                qdot,
+                h_val,
+                grad_h,
+                hqq,
+                M_inv,
+                f2,
             )
+
+        # Exponential moving average for smoother torque commands
+        k = 0.5
+        tau = k * tau + (1 - k) * self._prev_tau
 
         self._prev_tau = tau
 
@@ -417,7 +423,10 @@ class RobustCBFController(ControllerInterface):
         tau = np.clip(tau, -self._tau_max, self._tau_max)
         lyap = 0.5 * float((ee - target) @ (ee - target))
         return ControlOutput(
-            command=tau, mode=self._mode, barrier_value=0.0, lyapunov_value=lyap,
+            command=tau,
+            mode=self._mode,
+            barrier_value=0.0,
+            lyapunov_value=lyap,
         )
 
     def reset(self) -> None:
