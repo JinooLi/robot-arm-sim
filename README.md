@@ -91,6 +91,12 @@ controller:
     alpha: 1.0                    # Softmax 온도 파라미터
 ```
 
+### robust cbf controller
+
+[Robust Whole-Body Safety-Critical Control for Sampled-Data Robotic Manipulators via Control Barrier Functions](https://ieeexplore.ieee.org/abstract/document/11016805) 논문을 참고하여 구현한 제어기입니다.
+
+[참고 yaml](./configs/robust_cbf.yaml)
+
 ## 설정
 
 `configs/default.yaml`에서 시뮬레이션 환경, 로봇, 제어기, 목표 위치, 장애물 등을 설정합니다.

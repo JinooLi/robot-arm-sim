@@ -11,6 +11,7 @@ from .config.manager import ConfigManager
 # Import controllers and other components
 from .controller.clbf_controller import CLBFController
 from .controller.pd_controller import PDController
+from .controller.robust_cbf_controller import RobustCBFController
 
 # data engine for recording simulation data
 from .data.engine import DataEngine
@@ -99,6 +100,8 @@ def main() -> None:
     ctrl_type = config.get("controller", {}).get("type", "pd")
     if ctrl_type == "clbf":
         controller: ControllerInterface = CLBFController(dynamics)
+    elif ctrl_type == "robust_cbf":
+        controller = RobustCBFController(dynamics)
     else:
         controller = PDController(dynamics)
     data_engine = DataEngine()

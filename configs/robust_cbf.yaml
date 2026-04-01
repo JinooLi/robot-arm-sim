@@ -1,0 +1,57 @@
+simulation:
+  mode: "GUI"
+  gravity: [0, 0, -9.81]
+  timestep: 0.001
+  duration: 10.0
+  control_frequency: 100  # Hz (higher freq reduces ZOH error for safety)
+
+robot:
+  urdf: "franka_panda/panda.urdf"
+  num_joints: 7
+  initial_joint_positions: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+  joint_damping: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+controller:
+  type: "robust_cbf"
+  control_mode: "torque"
+  gains:
+    kp: [100, 100, 100, 100, 50, 50, 50]
+    kd: [20, 20, 20, 20, 10, 10, 10]
+  robust_cbf:
+    # Log-sum-exp smoothing (Eq. 16) - larger = closer to true min
+    gamma: 500.0
+    # HOCBF class-K coefficients (Eq. 39, 44)
+    alpha_1: 20.0
+    alpha_2_star: 30.0
+    # Slack weight in QP objective (Eq. 52)
+    p1: 1.0
+    # Velocity CBF gains (Eq. 21)
+    beta_1: 50.0
+    beta_2: 50.0
+    # Joint velocity limits [rad/s] (Eq. 19)
+    q_dot_max: [1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2]
+    # Torque limits [Nm] (Eq. 52)
+    tau_max: [50, 50, 50, 50, 8, 8, 8]
+    # Link spherical enclosure radii [m] (joints 0-6 + EE)
+    link_radii: [0.08, 0.08, 0.07, 0.07, 0.06, 0.06, 0.06, 0.05]
+    # Nominal Lyapunov controller
+    kv: 30.0               # velocity tracking gain (computed torque)
+    velocity_scale: 2.0    # Lyapunov gradient descent step scale
+    # Self-collision avoidance (Eq. 15)
+    self_collision: true
+
+target:
+  ee_position: [0.5, 0.3, 0.4]
+
+obstacles:
+  - position: [0.5, 0.0, 0.4]
+    radius: 0.1
+    color: [1, 0, 0, 0.5]
+  - position: [0.3, 0.3, 0.3]
+    radius: 0.08
+    color: [1, 0.5, 0, 0.5]
+
+data:
+  output_dir: "results"
+  format: "csv"
+  record_frequency: 100

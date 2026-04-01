@@ -11,6 +11,7 @@ dependencies = [
     "pin>=3.9.0",
     "pybullet>=3.2.7",
     "pyyaml>=6.0.3",
+    "scipy>=1.17.1",
     "seaborn>=0.13.2",
 ]
 
