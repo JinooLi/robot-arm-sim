@@ -3,7 +3,7 @@ simulation:
   gravity: [0, 0, -9.81]
   timestep: 0.001
   duration: 10.0
-  control_frequency: 100  # Hz (higher freq reduces ZOH error for safety)
+  control_frequency: 1000  # Hz (higher freq reduces ZOH error for safety)
 
 robot:
   urdf: "franka_panda/panda.urdf"

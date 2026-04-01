@@ -1,3 +1,7 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
 [project]
 name = "robot-arm-sim"
 version = "0.1.0"
@@ -15,8 +19,19 @@ dependencies = [
     "seaborn>=0.13.2",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
 [project.scripts]
 robot-arm-sim = "robot_arm_sim.main:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.scikit-build]
+wheel.install-dir = "."
+cmake.source-dir = "."
+cmake.build-type = "Release"
+wheel.packages = ["src/robot_arm_sim"]
+
+[tool.scikit-build.cmake.define]
+CMAKE_BUILD_TYPE = "Release"

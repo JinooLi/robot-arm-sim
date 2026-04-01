@@ -8,6 +8,10 @@ Safety filter QP with:
   - Whole-body safety via log-sum-exp HOCBF  (Eq. 16, 48)
   - Joint velocity CBF constraints           (Eq. 35, 37)
 Nominal controller: Lyapunov-based EE tracking converted to torque.
+
+When the C++ extension (_cbf_core) is available, the barrier computation
+and QP solve are accelerated via Eigen + qpOASES.  Otherwise the pure-Python
+fallback (scipy SLSQP) is used transparently.
 """
 
 from __future__ import annotations
@@ -15,7 +19,6 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from scipy.optimize import minimize as scipy_minimize
 
 from ..dynamics.pinocchio_model import PinocchioModel
 from ..interfaces.controller import (
@@ -25,7 +28,19 @@ from ..interfaces.controller import (
 )
 from ..interfaces.simulator import RobotState
 
+# Try to import C++ acceleration module
+try:
+    from .._cbf_core import CbfSolver as _CppCbfSolver
+
+    _HAS_CPP = True
+except ImportError:
+    _CppCbfSolver = None
+    _HAS_CPP = False
+
 _N = PinocchioModel.ARM_DOF  # 7
+
+# Finite-difference step for Hessian approximation
+_FD_EPS = 1e-7
 
 
 class RobustCBFController(ControllerInterface):
@@ -64,6 +79,9 @@ class RobustCBFController(ControllerInterface):
 
         self._prev_tau = np.zeros(_N)
 
+        # C++ solver (created after setup if available)
+        self._cpp: _CppCbfSolver | None = None
+
     def _build_self_pairs(self) -> list[tuple[int, int]]:
         """Non-adjacent link pairs for self-collision avoidance."""
         n = len(self._link_radii)
@@ -96,8 +114,46 @@ class RobustCBFController(ControllerInterface):
         self._vel_scale = c.get("velocity_scale", self._vel_scale)
         self._use_self_col = c.get("self_collision", self._use_self_col)
 
+        # Initialize C++ solver if available
+        if _HAS_CPP:
+            self._cpp = _CppCbfSolver(_N)
+            self._cpp.set_params(
+                self._gamma,
+                self._alpha_1,
+                self._alpha_2_star,
+                self._p1,
+                self._beta_1,
+                self._beta_2,
+                self._qdot_max,
+                self._tau_max,
+                self._link_radii,
+                self._self_pairs if self._use_self_col else [],
+            )
+            print("[RobustCBFController] Using C++ backend (qpOASES)")
+        else:
+            print("[RobustCBFController] Using Python fallback (scipy SLSQP)")
+
     # ------------------------------------------------------------------
-    # Whole-body safety constraint  h(q)  (Eq. 14-16)
+    # Link data helper (shared by C++ and Python paths)
+    # ------------------------------------------------------------------
+
+    def _compute_link_data(
+        self, q: np.ndarray
+    ) -> tuple[np.ndarray, list[np.ndarray]]:
+        """Compute positions and Jacobians for all links + EE."""
+        n_links = len(self._link_radii)
+        positions = np.empty((n_links, 3))
+        jacobians: list[np.ndarray] = []
+        for i in range(_N):
+            positions[i] = self._dyn.link_position(q, i)
+            jacobians.append(self._dyn.link_jacobian(q, i))
+        # End-effector (index 7)
+        positions[_N] = self._dyn.forward_kinematics(q)
+        jacobians.append(self._dyn.jacobian(q)[:3, :_N])
+        return positions, jacobians
+
+    # ------------------------------------------------------------------
+    # Whole-body safety constraint  h(q)  (Eq. 14-16)  [Python fallback]
     # ------------------------------------------------------------------
 
     def _h_and_grad(
@@ -160,7 +216,7 @@ class RobustCBFController(ControllerInterface):
         obstacles: list[tuple[np.ndarray, float]],
     ) -> float:
         """q̇ᵀ ∇²h q̇  via central finite difference on ∇h."""
-        eps = 1e-7
+        eps = _FD_EPS
         _, g_plus = self._h_and_grad(q + eps * qdot, obstacles)
         _, g_minus = self._h_and_grad(q - eps * qdot, obstacles)
         return float(qdot @ (g_plus - g_minus)) / (2.0 * eps)
@@ -186,7 +242,7 @@ class RobustCBFController(ControllerInterface):
         return M @ (self._kv * (qdot_des - qdot)) + nle
 
     # ------------------------------------------------------------------
-    # Safety-filter QP  (Eq. 52)
+    # Safety-filter QP  (Eq. 52)  [Python fallback]
     # ------------------------------------------------------------------
 
     def _solve_safety_qp(
@@ -200,6 +256,8 @@ class RobustCBFController(ControllerInterface):
         f2: np.ndarray,
     ) -> tuple[np.ndarray, float]:
         """min ‖τ-τ_nom‖² + p₁(α₂-α₂*)²  s.t. CBF constraints."""
+        from scipy.optimize import minimize as scipy_minimize
+
         n = _N
         a1 = self._alpha_1
         a2s = self._alpha_2_star
@@ -214,9 +272,8 @@ class RobustCBFController(ControllerInterface):
         rhs: list[float] = []
 
         # (1) HOCBF  ψ̃₂ ≥ 0  (Eq. 48, non-robust)
-        #   ∇h M⁻¹ τ  +  α₂ (∇h·q̇ + α₁ h)  ≥  -(q̇ᵀ∇²h q̇ + ∇h f₂ + α₁ ∇h·q̇)
-        gh_Minv = grad_h @ M_inv                             # (n,)
-        psi1 = float(grad_h @ qdot) + a1 * h_val             # scalar
+        gh_Minv = grad_h @ M_inv
+        psi1 = float(grad_h @ qdot) + a1 * h_val
         c0 = hqq + float(grad_h @ f2) + a1 * float(grad_h @ qdot)
 
         row = np.zeros(n + 1)
@@ -225,26 +282,23 @@ class RobustCBFController(ControllerInterface):
         rows.append(row)
         rhs.append(-c0)
 
-        # (2) Velocity upper CBF  ξ_{1,i} ≥ 0  (Eq. 35, non-robust)
-        #   -[M⁻¹]_i τ  ≥  f_{2,i} - β₁(q̇_max,i - q̇_i)
+        # (2) Velocity upper CBF  ξ_{1,i} ≥ 0  (Eq. 35)
         for i in range(n):
             row = np.zeros(n + 1)
             row[:n] = -M_inv[i]
             rows.append(row)
             rhs.append(f2[i] - b1 * (qdm[i] - qdot[i]))
 
-        # (3) Velocity lower CBF  ξ_{2,i} ≥ 0  (Eq. 37, non-robust)
-        #   [M⁻¹]_i τ  ≥  -f_{2,i} - β₂(q̇_max,i + q̇_i)
+        # (3) Velocity lower CBF  ξ_{2,i} ≥ 0  (Eq. 37)
         for i in range(n):
             row = np.zeros(n + 1)
             row[:n] = M_inv[i]
             rows.append(row)
             rhs.append(-f2[i] - b2 * (qdm[i] + qdot[i]))
 
-        A = np.array(rows)       # (1+2n, n+1)
-        b_vec = np.array(rhs)    # (1+2n,)
+        A = np.array(rows)
+        b_vec = np.array(rhs)
 
-        # ---- Objective ----
         def obj(x: np.ndarray) -> float:
             return (
                 0.5 * np.sum((x[:n] - tau_nom) ** 2)
@@ -275,7 +329,6 @@ class RobustCBFController(ControllerInterface):
         )
 
         if not res.success:
-            # Fallback: clamp nominal torque
             return np.clip(tau_nom, -tm, tm), 0.0
 
         return res.x[:n].copy(), float(res.x[n])
@@ -303,25 +356,45 @@ class RobustCBFController(ControllerInterface):
         if not obs and not self._use_self_col:
             return self._tracking_only(q, qdot, ee, target)
 
-        # h(q), ∇h
-        h_val, grad_h = self._h_and_grad(q, obs)
-
-        # q̇ᵀ ∇²h q̇
-        hqq = self._hess_qdot_qdot(q, qdot, obs)
-
-        # Dynamics quantities
+        # Dynamics quantities (always needed)
         M = self._dyn.mass_matrix(q)
         M_inv = np.linalg.inv(M)
         nle = self._dyn.nonlinear_effects(q, qdot)
-        f2 = -M_inv @ nle  # f_2(x)  (Eq. 29)
+        f2 = -M_inv @ nle
 
         # Nominal torque from Lyapunov tracking
         tau_nom = self._nominal_torque(q, qdot, ee, target)
 
-        # Safety-filter QP
-        tau, alpha_2 = self._solve_safety_qp(
-            tau_nom, qdot, h_val, grad_h, hqq, M_inv, f2,
-        )
+        # ---- C++ fast path ----
+        if self._cpp is not None:
+            link_pos, link_jac = self._compute_link_data(q)
+            link_pos_p, link_jac_p = self._compute_link_data(
+                q + _FD_EPS * qdot
+            )
+            link_pos_m, link_jac_m = self._compute_link_data(
+                q - _FD_EPS * qdot
+            )
+
+            # Pack obstacles into matrices
+            n_obs = len(obs)
+            obs_positions = np.array([o[0] for o in obs]).reshape(n_obs, 3)
+            obs_radii = np.array([o[1] for o in obs])
+
+            tau, alpha_2, h_val = self._cpp.compute_safety_torque(
+                tau_nom, qdot, M_inv, f2,
+                link_pos, link_jac,
+                link_pos_p, link_jac_p,
+                link_pos_m, link_jac_m,
+                obs_positions, obs_radii,
+            )
+        else:
+            # ---- Python fallback ----
+            h_val, grad_h = self._h_and_grad(q, obs)
+            hqq = self._hess_qdot_qdot(q, qdot, obs)
+            tau, alpha_2 = self._solve_safety_qp(
+                tau_nom, qdot, h_val, grad_h, hqq, M_inv, f2,
+            )
+
         self._prev_tau = tau
 
         lyap = 0.5 * float((ee - target) @ (ee - target))
