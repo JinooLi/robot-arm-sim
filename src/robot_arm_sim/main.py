@@ -65,6 +65,7 @@ def run_simulation(
             control = controller.compute(state, target, obstacles)
             data_engine.record(state, control, target)
             ctrl_step += 1
+            simulator.update_link_spheres()
 
         # Apply control
         if controller.control_mode == ControlMode.TORQUE:
@@ -109,6 +110,34 @@ def main() -> None:
     # Setup
     simulator.setup(config)
     controller.setup(config)
+
+    # Visualise link safety spheres if configured
+    ctrl_cfg = config.get("controller", {})
+    rcbf = ctrl_cfg.get("robust_cbf", {})
+    clbf = ctrl_cfg.get("clbf", {})
+
+    if "link_spheres" in rcbf:
+        sphere_specs = [
+            {
+                "link": s["link"],
+                "offset": s.get("offset", [0, 0, 0]),
+                "radius": s["radius"],
+            }
+            for s in rcbf["link_spheres"]
+        ]
+        simulator.setup_link_spheres(sphere_specs)
+    elif "link_radii" in rcbf:
+        sphere_specs = [
+            {"link": i, "offset": [0, 0, 0], "radius": r}
+            for i, r in enumerate(rcbf["link_radii"])
+        ]
+        simulator.setup_link_spheres(sphere_specs)
+    elif "link_radii" in clbf:
+        sphere_specs = [
+            {"link": i, "offset": [0, 0, 0], "radius": r}
+            for i, r in enumerate(clbf["link_radii"])
+        ]
+        simulator.setup_link_spheres(sphere_specs)
 
     print(f"Simulation starting: duration={config['simulation']['duration']}s")
     t0 = time.time()

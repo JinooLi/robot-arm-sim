@@ -16,6 +16,7 @@ fallback (scipy SLSQP) is used transparently.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -43,6 +44,42 @@ _N = PinocchioModel.ARM_DOF  # 7
 _FD_EPS = 1e-7
 
 
+@dataclass
+class SphereSpec:
+    """Specification for a single collision sphere attached to a link."""
+
+    link: int  # parent link index (0-6 for joints, 7 for EE)
+    offset: np.ndarray  # 3D offset in the link's local frame
+    radius: float
+
+    @staticmethod
+    def from_config(entry: dict) -> SphereSpec:
+        return SphereSpec(
+            link=entry["link"],
+            offset=np.array(entry.get("offset", [0, 0, 0]), dtype=float),
+            radius=float(entry["radius"]),
+        )
+
+    @staticmethod
+    def from_radii(radii: list[float]) -> list[SphereSpec]:
+        """Backward compat: one sphere per link at origin."""
+        return [
+            SphereSpec(link=i, offset=np.zeros(3), radius=r)
+            for i, r in enumerate(radii)
+        ]
+
+
+def _skew(v: np.ndarray) -> np.ndarray:
+    """Skew-symmetric matrix [v]×."""
+    return np.array(
+        [
+            [0, -v[2], v[1]],
+            [v[2], 0, -v[0]],
+            [-v[1], v[0], 0],
+        ]
+    )
+
+
 class RobustCBFController(ControllerInterface):
 
     def __init__(self, dynamics: PinocchioModel) -> None:
@@ -64,8 +101,11 @@ class RobustCBFController(ControllerInterface):
         self._tau_max = np.array([50.0, 50, 50, 50, 8, 8, 8])
 
         # ---- Link spherical enclosures (Fig. 2) ----
-        # 7 joints + end-effector = 8 spheres
-        self._link_radii = np.array([0.08, 0.08, 0.07, 0.07, 0.06, 0.06, 0.06, 0.05])
+        # Default: 7 joints + end-effector = 8 spheres at link origins
+        self._spheres: list[SphereSpec] = SphereSpec.from_radii(
+            [0.08, 0.08, 0.07, 0.07, 0.06, 0.06, 0.06, 0.05]
+        )
+        self._sphere_radii = np.array([s.radius for s in self._spheres])
 
         # ---- Nominal controller ----
         self._kv: float = 20.0  # velocity tracking gain (computed torque)
@@ -81,9 +121,20 @@ class RobustCBFController(ControllerInterface):
         self._cpp: _CppCbfSolver | None = None
 
     def _build_self_pairs(self) -> list[tuple[int, int]]:
-        """Non-adjacent link pairs for self-collision avoidance."""
-        n = len(self._link_radii)
-        return [(i, j) for i in range(n) for j in range(i + 2, n)]
+        """Non-adjacent sphere pairs for self-collision avoidance.
+
+        Excluded pairs:
+        - Spheres on the same parent link (rigidly attached, can't collide).
+        - Spheres whose list indices differ by at most 1 (neighbours along
+          the kinematic chain).
+        """
+        n = len(self._spheres)
+        pairs: list[tuple[int, int]] = []
+        for i in range(n):
+            for j in range(i + 2, n):
+                if self._spheres[i].link != self._spheres[j].link:
+                    pairs.append((i, j))
+        return pairs
 
     # ------------------------------------------------------------------
     # Setup
@@ -104,9 +155,14 @@ class RobustCBFController(ControllerInterface):
             self._qdot_max = np.array(c["q_dot_max"], dtype=float)
         if "tau_max" in c:
             self._tau_max = np.array(c["tau_max"], dtype=float)
-        if "link_radii" in c:
-            self._link_radii = np.array(c["link_radii"], dtype=float)
-            self._self_pairs = self._build_self_pairs()
+
+        # Sphere configuration: prefer link_spheres, fall back to link_radii
+        if "link_spheres" in c:
+            self._spheres = [SphereSpec.from_config(s) for s in c["link_spheres"]]
+        elif "link_radii" in c:
+            self._spheres = SphereSpec.from_radii(c["link_radii"])
+        self._sphere_radii = np.array([s.radius for s in self._spheres])
+        self._self_pairs = self._build_self_pairs()
 
         self._kv = c.get("kv", self._kv)
         self._vel_scale = c.get("velocity_scale", self._vel_scale)
@@ -124,28 +180,104 @@ class RobustCBFController(ControllerInterface):
                 self._beta_2,
                 self._qdot_max,
                 self._tau_max,
-                self._link_radii,
+                self._sphere_radii,
                 self._self_pairs if self._use_self_col else [],
             )
             print("[RobustCBFController] Using C++ backend (qpOASES)")
         else:
             print("[RobustCBFController] Using Python fallback (scipy SLSQP)")
 
+        # Diagnose initial barrier values at the starting configuration
+        q0 = np.array(config["robot"]["initial_joint_positions"], dtype=float)
+        self._diagnose_barrier(q0, config.get("obstacles", []))
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    def _diagnose_barrier(
+        self, q: np.ndarray, obstacles: list[dict],
+    ) -> None:
+        """Print per-pair h_k at a given configuration to find penetrations."""
+        sphere_pos, _ = self._compute_sphere_data(q)
+        n = len(self._spheres)
+
+        def _label(i: int) -> str:
+            s = self._spheres[i]
+            return f"S{i}(L{s.link} r={s.radius:.3f} off={s.offset.tolist()})"
+
+        violations: list[str] = []
+
+        # Obstacle pairs
+        for si in range(n):
+            for obs in obstacles:
+                o_pos = np.array(obs["position"], dtype=float)
+                o_r = float(obs["radius"])
+                d = sphere_pos[si] - o_pos
+                h_k = float(d @ d) - (self._sphere_radii[si] + o_r) ** 2
+                if h_k < 0:
+                    violations.append(
+                        f"  OBS  {_label(si)} <-> obs@{obs['position']} r={o_r}  "
+                        f"h_k={h_k:.6f}  dist={np.linalg.norm(d):.4f}  "
+                        f"r_sum={self._sphere_radii[si] + o_r:.4f}"
+                    )
+
+        # Self-collision pairs
+        if self._use_self_col:
+            for i, j in self._self_pairs:
+                d = sphere_pos[i] - sphere_pos[j]
+                r_sum = self._sphere_radii[i] + self._sphere_radii[j]
+                h_k = float(d @ d) - r_sum**2
+                if h_k < 0:
+                    violations.append(
+                        f"  SELF {_label(i)} <-> {_label(j)}  "
+                        f"h_k={h_k:.6f}  dist={np.linalg.norm(d):.4f}  "
+                        f"r_sum={r_sum:.4f}"
+                    )
+
+        if violations:
+            print(f"[RobustCBFController] WARNING: {len(violations)} negative h_k at initial pose:")
+            for v in violations:
+                print(v)
+        else:
+            print("[RobustCBFController] All barrier values positive at initial pose.")
+
     # ------------------------------------------------------------------
     # Link data helper (shared by C++ and Python paths)
     # ------------------------------------------------------------------
 
-    def _compute_link_data(self, q: np.ndarray) -> tuple[np.ndarray, list[np.ndarray]]:
-        """Compute positions and Jacobians for all links + EE."""
-        n_links = len(self._link_radii)
-        positions = np.empty((n_links, 3))
+    def _compute_sphere_data(
+        self,
+        q: np.ndarray,
+    ) -> tuple[np.ndarray, list[np.ndarray]]:
+        """Compute world positions and 3×DOF Jacobians for all spheres.
+
+        For spheres with a nonzero local-frame offset, the Jacobian is
+        corrected:  J_sphere = J_v - [R·offset]× · J_ω
+        """
+        self._dyn.prepare(q)
+        n_spheres = len(self._spheres)
+        positions = np.empty((n_spheres, 3))
         jacobians: list[np.ndarray] = []
-        for i in range(_N):
-            positions[i] = self._dyn.link_position(q, i)
-            jacobians.append(self._dyn.link_jacobian(q, i))
-        # End-effector (index 7)
-        positions[_N] = self._dyn.forward_kinematics(q)
-        jacobians.append(self._dyn.jacobian(q)[:3, :_N])
+
+        for idx, sp in enumerate(self._spheres):
+            if sp.link < _N:
+                pos, R = self._dyn.get_link_placement(sp.link)
+                J6 = self._dyn.get_link_jacobian_6d(sp.link)
+            else:
+                pos, R = self._dyn.get_ee_placement()
+                J6 = self._dyn.get_ee_jacobian_6d()
+
+            has_offset = np.any(sp.offset != 0)
+            if has_offset:
+                d = R @ sp.offset
+                positions[idx] = pos + d
+                # v_sphere = J_v·q̇ + ω × d = (J_v - [d]× · J_ω)·q̇
+                jacobians.append(J6[:3] - _skew(d) @ J6[3:])
+            else:
+                positions[idx] = pos
+                jacobians.append(J6[:3].copy())
+
         return positions, jacobians
 
     # ------------------------------------------------------------------
@@ -158,32 +290,27 @@ class RobustCBFController(ControllerInterface):
         obstacles: list[tuple[np.ndarray, float]],
     ) -> tuple[float, np.ndarray]:
         """Compute h(q) and ∇h(q) via log-sum-exp over all sphere pairs."""
-        link_pos: list[np.ndarray] = []
-        link_jac: list[np.ndarray] = []
-        for i in range(_N):
-            link_pos.append(self._dyn.link_position(q, i))
-            link_jac.append(self._dyn.link_jacobian(q, i))
-        link_pos.append(self._dyn.forward_kinematics(q))
-        link_jac.append(self._dyn.jacobian(q)[:3, :_N])
+        sphere_pos, sphere_jac = self._compute_sphere_data(q)
+        n_spheres = len(self._spheres)
 
         h_vals: list[float] = []
         h_grads: list[np.ndarray] = []
 
         # Obstacle avoidance  h_i = ||X_i - O||² - (r_i + r_o)²  (Eq. 14)
-        for pi in range(len(self._link_radii)):
+        for si in range(n_spheres):
             for o_pos, o_r in obstacles:
-                d = link_pos[pi] - o_pos
-                r_sum = self._link_radii[pi] + o_r
+                d = sphere_pos[si] - o_pos
+                r_sum = self._sphere_radii[si] + o_r
                 h_vals.append(float(d @ d) - r_sum**2)
-                h_grads.append(2.0 * link_jac[pi].T @ d)
+                h_grads.append(2.0 * sphere_jac[si].T @ d)
 
         # Self-collision  h_{j,k}  (Eq. 15)
         if self._use_self_col:
             for i, j in self._self_pairs:
-                d = link_pos[i] - link_pos[j]
-                r_sum = self._link_radii[i] + self._link_radii[j]
+                d = sphere_pos[i] - sphere_pos[j]
+                r_sum = self._sphere_radii[i] + self._sphere_radii[j]
                 h_vals.append(float(d @ d) - r_sum**2)
-                h_grads.append(2.0 * (link_jac[i] - link_jac[j]).T @ d)
+                h_grads.append(2.0 * (sphere_jac[i] - sphere_jac[j]).T @ d)
 
         if not h_vals:
             return 1.0, np.zeros(_N)
@@ -360,9 +487,9 @@ class RobustCBFController(ControllerInterface):
 
         # ---- C++ fast path ----
         if self._cpp is not None:
-            link_pos, link_jac = self._compute_link_data(q)
-            link_pos_p, link_jac_p = self._compute_link_data(q + _FD_EPS * qdot)
-            link_pos_m, link_jac_m = self._compute_link_data(q - _FD_EPS * qdot)
+            link_pos, link_jac = self._compute_sphere_data(q)
+            link_pos_p, link_jac_p = self._compute_sphere_data(q + _FD_EPS * qdot)
+            link_pos_m, link_jac_m = self._compute_sphere_data(q - _FD_EPS * qdot)
 
             # Pack obstacles into matrices
             n_obs = len(obs)
@@ -431,6 +558,11 @@ class RobustCBFController(ControllerInterface):
 
     def reset(self) -> None:
         self._prev_tau = np.zeros(_N)
+
+    @property
+    def spheres(self) -> list[SphereSpec]:
+        """Sphere specifications (for visualization)."""
+        return self._spheres
 
     @property
     def control_mode(self) -> ControlMode:

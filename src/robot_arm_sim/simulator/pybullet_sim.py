@@ -21,6 +21,8 @@ class PyBulletSimulator(SimulatorInterface):
         self._initial_q: np.ndarray = np.zeros(7)
         self._realtime: bool = False
         self._wall_start: float = 0.0
+        self._link_sphere_ids: list[int] = []
+        self._link_sphere_specs: list[dict] = []  # {link, offset, radius}
 
     def setup(self, config: dict[str, Any]) -> None:
         sim_cfg = config["simulation"]
@@ -162,6 +164,81 @@ class PyBulletSimulator(SimulatorInterface):
         if self._client is not None:
             p.disconnect(self._client)
             self._client = None
+
+    # ------------------------------------------------------------------
+    # Link sphere visualisation
+    # ------------------------------------------------------------------
+
+    def setup_link_spheres(self, sphere_specs: list[dict]) -> None:
+        """Create transparent spheres for safety-radius visualisation.
+
+        Args:
+            sphere_specs: list of dicts with keys ``link``, ``offset``, ``radius``.
+                ``link``: parent link index (0-6 for joints, 7 for EE).
+                ``offset``: [x, y, z] offset in the link's local frame.
+                ``radius``: sphere radius in metres.
+        """
+        self._remove_link_spheres()
+        self._link_sphere_specs = list(sphere_specs)
+
+        for spec in sphere_specs:
+            visual = p.createVisualShape(
+                p.GEOM_SPHERE,
+                radius=spec["radius"],
+                rgbaColor=[0, 0.6, 1, 0.25],  # translucent blue
+            )
+            body_id = p.createMultiBody(
+                baseMass=0,
+                baseVisualShapeIndex=visual,
+                basePosition=[0, 0, 0],
+            )
+            self._link_sphere_ids.append(body_id)
+
+    def update_link_spheres(self) -> None:
+        """Move each sphere to its current world position (link origin + rotated offset)."""
+        if not self._link_sphere_ids:
+            return
+
+        for body_id, spec in zip(self._link_sphere_ids, self._link_sphere_specs):
+            link_idx = spec["link"]
+            if link_idx < len(self._joint_indices):
+                state = p.getLinkState(self._robot_id, self._joint_indices[link_idx])
+            else:
+                # End-effector: panda_hand = link 11
+                state = p.getLinkState(self._robot_id, 11)
+
+            # state[4],[5] = URDF link frame (matches Pinocchio oMi)
+            # state[0],[1] = center of mass (different!)
+            pos = np.array(state[4])
+            offset = spec["offset"]
+            if offset[0] != 0 or offset[1] != 0 or offset[2] != 0:
+                R = np.array(p.getMatrixFromQuaternion(state[5])).reshape(3, 3)
+                pos = pos + R @ np.array(offset)
+
+            p.resetBasePositionAndOrientation(body_id, pos.tolist(), [0, 0, 0, 1])
+
+    def _remove_link_spheres(self) -> None:
+        for body_id in self._link_sphere_ids:
+            p.removeBody(body_id)
+        self._link_sphere_ids.clear()
+        self._link_sphere_specs.clear()
+
+    def draw_link_frames(self, axis_length: float = 0.1) -> None:
+        """Draw RGB axes (x=red, y=green, z=blue) at each joint frame."""
+        colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # RGB = XYZ
+        for idx in self._joint_indices:
+            state = p.getLinkState(self._robot_id, idx)
+            pos = np.array(state[4])  # URDF link frame, not CoM
+            R = np.array(p.getMatrixFromQuaternion(state[5])).reshape(3, 3)
+            for ax in range(3):
+                end = pos + axis_length * R[:, ax]
+                p.addUserDebugLine(
+                    pos.tolist(),
+                    end.tolist(),
+                    lineColorRGB=colors[ax],
+                    lineWidth=2,
+                    lifeTime=0,
+                )
 
     def draw_debug_point(self, position, color=[1, 0, 0], size=1, lifeTime=0):
         """

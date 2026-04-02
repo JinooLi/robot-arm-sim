@@ -86,3 +86,38 @@ class PinocchioModel:
             self.model, self.data, joint_idx + 1, pin.LOCAL_WORLD_ALIGNED
         )
         return J[:3, : self.ARM_DOF].copy()
+
+    # ------------------------------------------------------------------
+    # Batch computation for sphere-based barrier (prepare once, query many)
+    # ------------------------------------------------------------------
+
+    def prepare(self, q: np.ndarray) -> None:
+        """Run FK and Jacobian computation once for the given q."""
+        q_full = self._pad_q(q)
+        pin.forwardKinematics(self.model, self.data, q_full)
+        pin.updateFramePlacements(self.model, self.data)
+        pin.computeJointJacobians(self.model, self.data, q_full)
+
+    def get_link_placement(self, joint_idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return (position, rotation) for a joint link from precomputed data."""
+        oMi = self.data.oMi[joint_idx + 1]
+        return oMi.translation.copy(), oMi.rotation.copy()
+
+    def get_link_jacobian_6d(self, joint_idx: int) -> np.ndarray:
+        """Return 6xARM_DOF Jacobian (linear + angular) from precomputed data."""
+        J = pin.getJointJacobian(
+            self.model, self.data, joint_idx + 1, pin.LOCAL_WORLD_ALIGNED
+        )
+        return J[:6, : self.ARM_DOF].copy()
+
+    def get_ee_placement(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return (position, rotation) for the EE frame from precomputed data."""
+        oMf = self.data.oMf[self.ee_frame_id]
+        return oMf.translation.copy(), oMf.rotation.copy()
+
+    def get_ee_jacobian_6d(self) -> np.ndarray:
+        """Return 6xARM_DOF Jacobian for the EE frame from precomputed data."""
+        J = pin.getFrameJacobian(
+            self.model, self.data, self.ee_frame_id, pin.LOCAL_WORLD_ALIGNED
+        )
+        return J[:6, : self.ARM_DOF].copy()

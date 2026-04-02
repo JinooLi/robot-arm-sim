@@ -15,8 +15,8 @@ controller:
   type: "robust_cbf"
   control_mode: "torque"
   gains:
-    kp: [100, 100, 100, 100, 50, 50, 50]
-    kd: [20, 20, 20, 20, 10, 10, 10]
+    kp: [50, 50, 50, 50, 20, 20, 20]
+    kd: [10, 10, 10, 10, 5, 5, 5]
   robust_cbf:
     # Log-sum-exp smoothing (Eq. 16) - larger = closer to true min
     gamma: 500.0
@@ -32,10 +32,28 @@ controller:
     q_dot_max: [1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2]
     # Torque limits [Nm] (Eq. 52)
     tau_max: [50, 50, 50, 50, 8, 8, 8]
-    # Link spherical enclosure radii [m] (joints 0-6 + EE)
+    # Link spherical enclosures [m]
+    # Each entry: link (0-6 joints, 7 EE), offset in link-local frame, radius.
+    # Multiple spheres per link are allowed for tighter coverage.
     # Wrist joints (4-6) are close together — use smaller radii to avoid
     # initial self-collision penetration (dist(j4,j6) ≈ 0.088m)
-    link_radii: [0.08, 0.08, 0.07, 0.07, 0.04, 0.04, 0.04, 0.03]
+    link_spheres:
+      - {link: 0, offset: [0, 0, -0.15],radius: 0.08}
+      - {link: 0, offset: [0, -0.07, 0],    radius: 0.07}  # base link needs extra coverage for initial pose
+      - {link: 1, offset: [0, 0, 0.07],    radius: 0.07}
+      - {link: 1, offset: [0, -0.14, 0],    radius: 0.07}
+      - {link: 2, offset: [0, 0, -0.065],    radius: 0.06}
+      - {link: 3, offset: [0, 0, -0.06],    radius: 0.06}
+      - {link: 3, offset: [0, 0, 0.06],    radius: 0.06}
+      - {link: 3, offset: [-0.08, 0.07, 0],    radius: 0.07}
+      - {link: 4, offset: [0, 0, -0.21],    radius: 0.07}
+      - {link: 4, offset: [0, 0.08, -0.1],    radius: 0.04}
+      - {link: 4, offset: [0, 0.08, 0],    radius: 0.06}
+      - {link: 5, offset: [0, 0, 0.02],    radius: 0.06}
+      - {link: 5, offset: [0.08, 0.05, 0],    radius: 0.05}
+      - {link: 5, offset: [0.09, -0.01, 0],    radius: 0.06}
+      - {link: 6, offset: [0, 0, 0.1],    radius: 0.05}
+      - {link: 7, offset: [0, 0, 0],    radius: 0.03}  # EE
     # Nominal Lyapunov controller
     kv: 30.0               # velocity tracking gain (computed torque)
     velocity_scale: 2.0    # Lyapunov gradient descent step scale
@@ -43,10 +61,10 @@ controller:
     self_collision: true
 
 target:
-  ee_position: [0.5, 0.3, 0.4]
+  ee_position: [0.5, 0.5, 0.5]
 
 obstacles:
-  - position: [0.5, 0.0, 0.4]
+  - position: [0.3, 0.3, 0.5]
     radius: 0.1
     color: [1, 0, 0, 0.5]
   - position: [0.3, 0.3, 0.3]
