@@ -124,15 +124,15 @@ class RobustCBFController(ControllerInterface):
         """Non-adjacent sphere pairs for self-collision avoidance.
 
         Excluded pairs:
-        - Spheres on the same parent link (rigidly attached, can't collide).
-        - Spheres whose list indices differ by at most 1 (neighbours along
-          the kinematic chain).
+        - Spheres whose list indices differ by at most 1 (neighbours in chain).
+        - Spheres on the same parent link (rigidly attached).
+        - Spheres on adjacent parent links (link index diff ≤ 1).
         """
         n = len(self._spheres)
         pairs: list[tuple[int, int]] = []
         for i in range(n):
             for j in range(i + 2, n):
-                if self._spheres[i].link != self._spheres[j].link:
+                if abs(self._spheres[i].link - self._spheres[j].link) >= 2:
                     pairs.append((i, j))
         return pairs
 
@@ -527,6 +527,9 @@ class RobustCBFController(ControllerInterface):
                 M_inv,
                 f2,
             )
+
+        k = 0.5
+        tau = k * tau + (1 - k) * self._prev_tau
 
         self._prev_tau = tau
 
