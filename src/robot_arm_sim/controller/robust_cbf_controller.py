@@ -196,7 +196,9 @@ class RobustCBFController(ControllerInterface):
     # ------------------------------------------------------------------
 
     def _diagnose_barrier(
-        self, q: np.ndarray, obstacles: list[dict],
+        self,
+        q: np.ndarray,
+        obstacles: list[dict],
     ) -> None:
         """Print per-pair h_k at a given configuration to find penetrations."""
         sphere_pos, _ = self._compute_sphere_data(q)
@@ -236,7 +238,9 @@ class RobustCBFController(ControllerInterface):
                     )
 
         if violations:
-            print(f"[RobustCBFController] WARNING: {len(violations)} negative h_k at initial pose:")
+            print(
+                f"[RobustCBFController] WARNING: {len(violations)} negative h_k at initial pose:"
+            )
             for v in violations:
                 print(v)
         else:
@@ -523,10 +527,6 @@ class RobustCBFController(ControllerInterface):
                 M_inv,
                 f2,
             )
-
-        # Exponential moving average for smoother torque commands
-        k = 0.5
-        tau = k * tau + (1 - k) * self._prev_tau
 
         self._prev_tau = tau
 

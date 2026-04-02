@@ -16,7 +16,7 @@ controller:
   control_mode: "torque"
   gains:
     kp: [50, 50, 50, 50, 20, 20, 20]
-    kd: [10, 10, 10, 10, 5, 5, 5]
+    kd: [30, 30, 30, 30, 15, 15, 15]
   robust_cbf:
     # Log-sum-exp smoothing (Eq. 16) - larger = closer to true min
     gamma: 500.0
